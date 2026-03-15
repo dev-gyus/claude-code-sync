@@ -13,6 +13,57 @@ export async function fileExists(filePath) {
     }
 }
 /**
+ * Compare files between sync repo and local to detect conflicts.
+ */
+export async function detectConflicts(mappings, syncRepoDir) {
+    const results = [];
+    for (const mapping of mappings) {
+        const remotePath = path.join(syncRepoDir, mapping.syncRepoPath);
+        const localPath = mapping.sourcePath;
+        const remoteExists = await fileExists(remotePath);
+        const localExists = await fileExists(localPath);
+        if (remoteExists && !localExists) {
+            results.push({
+                syncRepoPath: mapping.syncRepoPath,
+                localPath,
+                remotePath,
+                status: 'new',
+            });
+        }
+        else if (!remoteExists && localExists) {
+            results.push({
+                syncRepoPath: mapping.syncRepoPath,
+                localPath,
+                remotePath,
+                status: 'local-only',
+            });
+        }
+        else if (remoteExists && localExists) {
+            try {
+                const [localBuf, remoteBuf] = await Promise.all([
+                    fs.readFile(localPath),
+                    fs.readFile(remotePath),
+                ]);
+                results.push({
+                    syncRepoPath: mapping.syncRepoPath,
+                    localPath,
+                    remotePath,
+                    status: localBuf.equals(remoteBuf) ? 'identical' : 'conflict',
+                });
+            }
+            catch {
+                results.push({
+                    syncRepoPath: mapping.syncRepoPath,
+                    localPath,
+                    remotePath,
+                    status: 'conflict',
+                });
+            }
+        }
+    }
+    return results;
+}
+/**
  * Copy files described by a set of mappings.
  *
  * @param mappings  - Array of FileMapping objects produced by a module's getFiles().
@@ -21,13 +72,17 @@ export async function fileExists(filePath) {
  * @param direction  - 'toSync' copies sourcePath -> syncRepoPath under targetBase.
  *                     'fromSync' copies syncRepoPath under sourceBase -> sourcePath.
  */
-export async function copyMappedFiles(mappings, sourceBase, targetBase, direction) {
+export async function copyMappedFiles(mappings, sourceBase, targetBase, direction, skipFiles) {
     const result = {
         copied: [],
         skipped: [],
         errors: [],
     };
     for (const mapping of mappings) {
+        if (skipFiles?.has(mapping.syncRepoPath)) {
+            result.skipped.push(mapping.syncRepoPath);
+            continue;
+        }
         let src;
         let dest;
         if (direction === 'toSync') {

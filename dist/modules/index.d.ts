@@ -1,5 +1,5 @@
 import { SyncModule } from './base-module.js';
-export { SyncModule, FileMapping, CopyResult } from './base-module.js';
+export { SyncModule, FileMapping, CopyResult, ConflictInfo, FileStatus, detectConflicts } from './base-module.js';
 /**
  * Retrieve a single module by name.
  */

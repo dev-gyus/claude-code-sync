@@ -12,6 +12,15 @@ export interface CopyResult {
   errors: string[];
 }
 
+export type FileStatus = 'new' | 'identical' | 'conflict' | 'local-only';
+
+export interface ConflictInfo {
+  syncRepoPath: string;
+  localPath: string;
+  remotePath: string;
+  status: FileStatus;
+}
+
 export interface SyncModule {
   name: string;
   description: string;
@@ -33,6 +42,62 @@ export async function fileExists(filePath: string): Promise<boolean> {
 }
 
 /**
+ * Compare files between sync repo and local to detect conflicts.
+ */
+export async function detectConflicts(
+  mappings: FileMapping[],
+  syncRepoDir: string,
+): Promise<ConflictInfo[]> {
+  const results: ConflictInfo[] = [];
+
+  for (const mapping of mappings) {
+    const remotePath = path.join(syncRepoDir, mapping.syncRepoPath);
+    const localPath = mapping.sourcePath;
+
+    const remoteExists = await fileExists(remotePath);
+    const localExists = await fileExists(localPath);
+
+    if (remoteExists && !localExists) {
+      results.push({
+        syncRepoPath: mapping.syncRepoPath,
+        localPath,
+        remotePath,
+        status: 'new',
+      });
+    } else if (!remoteExists && localExists) {
+      results.push({
+        syncRepoPath: mapping.syncRepoPath,
+        localPath,
+        remotePath,
+        status: 'local-only',
+      });
+    } else if (remoteExists && localExists) {
+      try {
+        const [localBuf, remoteBuf] = await Promise.all([
+          fs.readFile(localPath),
+          fs.readFile(remotePath),
+        ]);
+        results.push({
+          syncRepoPath: mapping.syncRepoPath,
+          localPath,
+          remotePath,
+          status: localBuf.equals(remoteBuf) ? 'identical' : 'conflict',
+        });
+      } catch {
+        results.push({
+          syncRepoPath: mapping.syncRepoPath,
+          localPath,
+          remotePath,
+          status: 'conflict',
+        });
+      }
+    }
+  }
+
+  return results;
+}
+
+/**
  * Copy files described by a set of mappings.
  *
  * @param mappings  - Array of FileMapping objects produced by a module's getFiles().
@@ -46,6 +111,7 @@ export async function copyMappedFiles(
   sourceBase: string,
   targetBase: string,
   direction: 'toSync' | 'fromSync',
+  skipFiles?: Set<string>,
 ): Promise<CopyResult> {
   const result: CopyResult = {
     copied: [],
@@ -54,6 +120,11 @@ export async function copyMappedFiles(
   };
 
   for (const mapping of mappings) {
+    if (skipFiles?.has(mapping.syncRepoPath)) {
+      result.skipped.push(mapping.syncRepoPath);
+      continue;
+    }
+
     let src: string;
     let dest: string;
 

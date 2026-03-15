@@ -5,6 +5,7 @@ import { MemoryModule } from './memory.js';
 import { PluginsModule } from './plugins.js';
 import { PlansModule } from './plans.js';
 import { FullBackupModule } from './full-backup.js';
+export { detectConflicts } from './base-module.js';
 const modules = new Map();
 // Register all built-in modules
 const builtinModules = [

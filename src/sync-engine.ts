@@ -25,7 +25,9 @@ import {
   getEnabledModules,
   getAllModules,
   getModule,
+  detectConflicts,
   type SyncModule,
+  type ConflictInfo,
 } from './modules/index.js';
 import { scanFiles } from './utils/sensitive-scanner.js';
 import * as logger from './utils/logger.js';
@@ -50,6 +52,14 @@ export interface PullOptions {
   dryRun?: boolean;
   backup?: boolean;
   keepLocal?: boolean;
+  checkConflicts?: boolean;
+  overwriteFiles?: string[];
+  skipFiles?: string[];
+}
+
+export interface ConflictCheckResult {
+  moduleName: string;
+  conflicts: ConflictInfo[];
 }
 
 export interface StatusResult {
@@ -367,12 +377,20 @@ export class SyncEngine {
       return [];
     }
 
-    // 3. Backup if requested
+    // 3. Check conflicts only mode
+    if (options?.checkConflicts) {
+      const conflictResults = await this.detectConflicts(modules, syncRepoDir);
+      // Output as JSON for programmatic consumption
+      console.log(JSON.stringify(conflictResults, null, 2));
+      return [];
+    }
+
+    // 4. Backup if requested
     if (options?.backup) {
       await this.createBackup(modules);
     }
 
-    // 4. Dry-run: compare and log
+    // 5. Dry-run: compare and log
     if (options?.dryRun) {
       logger.info('[DRY RUN] The following modules would be pulled:');
       const results: SyncResult[] = [];
@@ -392,11 +410,42 @@ export class SyncEngine {
       return results;
     }
 
-    // 5. Copy files from sync repo
+    // 6. Build skip set from --keep-local and --skip-files
+    const skipSet = new Set<string>(options?.skipFiles ?? []);
+
+    if (options?.keepLocal) {
+      // Auto-detect conflicts and add all to skip set
+      const conflictResults = await this.detectConflicts(modules, syncRepoDir);
+      for (const cr of conflictResults) {
+        for (const c of cr.conflicts) {
+          if (c.status === 'conflict') {
+            skipSet.add(c.syncRepoPath);
+          }
+        }
+      }
+    }
+
+    // 7. If overwriteFiles specified, only skip files NOT in overwrite list
+    // (overwriteFiles takes precedence - remove them from skipSet)
+    if (options?.overwriteFiles) {
+      for (const f of options.overwriteFiles) {
+        skipSet.delete(f);
+      }
+    }
+
+    // 8. Copy files from sync repo
     const results: SyncResult[] = [];
     for (const mod of modules) {
       logger.info(`Restoring ${mod.name}...`);
-      const copyResult = await mod.copyFromSyncRepo(syncRepoDir, this.claudeDir);
+      const mappings = await mod.getFiles(this.claudeDir);
+      const { copyMappedFiles } = await import('./modules/base-module.js');
+      const copyResult = await copyMappedFiles(
+        mappings,
+        syncRepoDir,
+        this.claudeDir,
+        'fromSync',
+        skipSet.size > 0 ? skipSet : undefined,
+      );
       results.push({
         moduleName: mod.name,
         copied: copyResult.copied,
@@ -409,6 +458,11 @@ export class SyncEngine {
           `  ${mod.name}: ${copyResult.copied.length} file(s) restored`,
         );
       }
+      if (copyResult.skipped.length > 0) {
+        logger.info(
+          `  ${mod.name}: ${copyResult.skipped.length} file(s) skipped (kept local)`,
+        );
+      }
       if (copyResult.errors.length > 0) {
         for (const err of copyResult.errors) {
           logger.error(`  ${mod.name}: ${err}`);
@@ -417,6 +471,32 @@ export class SyncEngine {
     }
 
     return results;
+  }
+
+  // -----------------------------------------------------------------------
+  // checkConflicts (public API for conflict detection)
+  // -----------------------------------------------------------------------
+
+  async checkConflicts(options?: Pick<PullOptions, 'modules'>): Promise<ConflictCheckResult[]> {
+    const config = await loadConfig(this.claudeDir);
+    const syncRepoDir = getSyncRepoDir(this.claudeDir);
+
+    // Git pull first to get latest
+    logger.info('Pulling latest changes from remote...');
+    try {
+      gitPull(syncRepoDir);
+      logger.success('Pull complete.');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(`Pull failed: ${message}`);
+      throw err;
+    }
+
+    const modules = options?.modules
+      ? resolveModules(options.modules)
+      : getEnabledModules(expandModuleConfig(config.modules as unknown as Record<string, boolean>));
+
+    return this.detectConflicts(modules, syncRepoDir);
   }
 
   // -----------------------------------------------------------------------
@@ -502,6 +582,44 @@ export class SyncEngine {
   private getMachineId(): string {
     const { hostname } = await_import_os();
     return hostname;
+  }
+
+  private async detectConflicts(
+    modules: SyncModule[],
+    syncRepoDir: string,
+  ): Promise<ConflictCheckResult[]> {
+    const results: ConflictCheckResult[] = [];
+
+    for (const mod of modules) {
+      const mappings = await mod.getFiles(this.claudeDir);
+      // Also check files that exist in sync repo but not locally
+      const { glob } = await import('glob');
+      const modPrefix = mappings.length > 0
+        ? mappings[0]!.syncRepoPath.split('/')[0]!
+        : mod.name;
+      const syncModDir = join(syncRepoDir, modPrefix);
+
+      // Build mappings for files in sync repo that might not be in local getFiles()
+      const extraMappings: Array<{ sourcePath: string; syncRepoPath: string }> = [];
+      if (existsSync(syncModDir)) {
+        const syncFiles = await glob('**/*', { cwd: syncModDir, nodir: true, dot: true });
+        const knownSyncPaths = new Set(mappings.map((m) => m.syncRepoPath));
+        for (const f of syncFiles) {
+          const syncRepoPath = `${modPrefix}/${f}`;
+          if (!knownSyncPaths.has(syncRepoPath)) {
+            // File exists in remote but not tracked locally
+            const localPath = join(this.claudeDir, f);
+            extraMappings.push({ sourcePath: localPath, syncRepoPath });
+          }
+        }
+      }
+
+      const allMappings = [...mappings, ...extraMappings];
+      const conflicts = await detectConflicts(allMappings, syncRepoDir);
+      results.push({ moduleName: mod.name, conflicts });
+    }
+
+    return results;
   }
 
   private async createBackup(modules: SyncModule[]): Promise<void> {

@@ -87,13 +87,19 @@ program
   .option('-m, --module <modules>', 'Comma-separated list of modules to pull')
   .option('--dry-run', 'Preview changes without pulling')
   .option('--backup', 'Create a backup before pulling')
-  .option('--keep-local', 'Keep local files on conflict')
+  .option('--keep-local', 'Keep all local files on conflict')
+  .option('--check-conflicts', 'Detect conflicts and output as JSON without applying')
+  .option('--overwrite-files <files>', 'Comma-separated list of sync repo paths to overwrite')
+  .option('--skip-files <files>', 'Comma-separated list of sync repo paths to skip')
   .action(
     async (opts: {
       module?: string;
       dryRun?: boolean;
       backup?: boolean;
       keepLocal?: boolean;
+      checkConflicts?: boolean;
+      overwriteFiles?: string;
+      skipFiles?: string;
     }) => {
       try {
         const engine = new SyncEngine();
@@ -104,7 +110,16 @@ program
           dryRun: opts.dryRun,
           backup: opts.backup,
           keepLocal: opts.keepLocal,
+          checkConflicts: opts.checkConflicts,
+          overwriteFiles: opts.overwriteFiles
+            ? opts.overwriteFiles.split(',').map((f) => f.trim())
+            : undefined,
+          skipFiles: opts.skipFiles
+            ? opts.skipFiles.split(',').map((f) => f.trim())
+            : undefined,
         });
+
+        if (opts.checkConflicts) return;
 
         logger.divider();
         for (const r of results) {

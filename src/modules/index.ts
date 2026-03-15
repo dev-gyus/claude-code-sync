@@ -7,7 +7,7 @@ import { PluginsModule } from './plugins.js';
 import { PlansModule } from './plans.js';
 import { FullBackupModule } from './full-backup.js';
 
-export { SyncModule, FileMapping, CopyResult } from './base-module.js';
+export { SyncModule, FileMapping, CopyResult, ConflictInfo, FileStatus, detectConflicts } from './base-module.js';
 
 const modules: Map<string, SyncModule> = new Map();
 

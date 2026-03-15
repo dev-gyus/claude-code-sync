@@ -7,6 +7,13 @@ export interface CopyResult {
     skipped: string[];
     errors: string[];
 }
+export type FileStatus = 'new' | 'identical' | 'conflict' | 'local-only';
+export interface ConflictInfo {
+    syncRepoPath: string;
+    localPath: string;
+    remotePath: string;
+    status: FileStatus;
+}
 export interface SyncModule {
     name: string;
     description: string;
@@ -19,6 +26,10 @@ export interface SyncModule {
  */
 export declare function fileExists(filePath: string): Promise<boolean>;
 /**
+ * Compare files between sync repo and local to detect conflicts.
+ */
+export declare function detectConflicts(mappings: FileMapping[], syncRepoDir: string): Promise<ConflictInfo[]>;
+/**
  * Copy files described by a set of mappings.
  *
  * @param mappings  - Array of FileMapping objects produced by a module's getFiles().
@@ -27,4 +38,4 @@ export declare function fileExists(filePath: string): Promise<boolean>;
  * @param direction  - 'toSync' copies sourcePath -> syncRepoPath under targetBase.
  *                     'fromSync' copies syncRepoPath under sourceBase -> sourcePath.
  */
-export declare function copyMappedFiles(mappings: FileMapping[], sourceBase: string, targetBase: string, direction: 'toSync' | 'fromSync'): Promise<CopyResult>;
+export declare function copyMappedFiles(mappings: FileMapping[], sourceBase: string, targetBase: string, direction: 'toSync' | 'fromSync', skipFiles?: Set<string>): Promise<CopyResult>;
